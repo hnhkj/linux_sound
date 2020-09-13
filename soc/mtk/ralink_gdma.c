@@ -48,6 +48,7 @@
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
 #include <linux/fs.h>
+#include <linux/delay.h>
 #if defined (CONFIG_MIPS)
   #include <asm/uaccess.h>
   #include <asm/addrspace.h>
@@ -228,7 +229,7 @@ int GdmaReqQuickIns(uint32_t ChNum)
 int _GdmaReqEntryIns(GdmaReqEntry *NewEntry)
 {
     uint32_t Data=0;
-
+#if 0
     GDMA_PRINT("== << GDMA Control Reg (Channel=%d) >> ===\n", NewEntry->ChNum);
     GDMA_PRINT(" Channel Source Addr = %x \n", NewEntry->Src);
     GDMA_PRINT(" Channel Dest Addr = %x \n", NewEntry->Dst);
@@ -257,14 +258,15 @@ int _GdmaReqEntryIns(GdmaReqEntry *NewEntry)
     GDMA_PRINT("Next Unmasked Channel=%d\n", NewEntry->NextUnMaskCh);
     GDMA_PRINT("Channel Mask=%d\n", NewEntry->ChMask);
     GDMA_PRINT("========================================\n");
+#endif 
 
     GDMA_WRITE_REG(GDMA_SRC_REG(NewEntry->ChNum), NewEntry->Src);
-    GDMA_PRINT("SrcAddr: Write %0X to %X\n", \
-	    NewEntry->Src, GDMA_SRC_REG(NewEntry->ChNum));
+    //GDMA_PRINT("SrcAddr: Write %0X to %X\n", \
+	   // NewEntry->Src, GDMA_SRC_REG(NewEntry->ChNum));
 
     GDMA_WRITE_REG(GDMA_DST_REG(NewEntry->ChNum), NewEntry->Dst);
-    GDMA_PRINT("DstAddr: Write %0X to %X\n", \
-	    NewEntry->Dst, GDMA_DST_REG(NewEntry->ChNum));
+    //GDMA_PRINT("DstAddr: Write %0X to %X\n", \
+	 //   NewEntry->Dst, GDMA_DST_REG(NewEntry->ChNum));
 
     Data |= ( (NewEntry->NextUnMaskCh) << NEXT_UNMASK_CH_OFFSET); 
     Data |= ( NewEntry->ChMask << CH_MASK_OFFSET); 
@@ -283,7 +285,7 @@ int _GdmaReqEntryIns(GdmaReqEntry *NewEntry)
 #endif
 
     GDMA_WRITE_REG(GDMA_CTRL_REG1(NewEntry->ChNum), Data);
-    GDMA_PRINT("CTRL1: Write %08X to %8X\n", Data, GDMA_CTRL_REG1(NewEntry->ChNum));
+    //GDMA_PRINT("CTRL1: Write %08X to %8X\n", Data, GDMA_CTRL_REG1(NewEntry->ChNum));
 
     Data = ((NewEntry->TransCount) << TRANS_CNT_OFFSET); 
 #if defined (CONFIG_RALINK_RT3052)
@@ -306,7 +308,7 @@ int _GdmaReqEntryIns(GdmaReqEntry *NewEntry)
     Data |= (0x01<<CH_EBL_OFFSET); 
     GDMA_WRITE_REG(GDMA_CTRL_REG(NewEntry->ChNum), Data);
     //GDMA_READ_REG(GDMA_CTRL_REG(NewEntry->ChNum));
-    GDMA_PRINT("CTRL: Write %08X to %8X\n", Data, GDMA_CTRL_REG(NewEntry->ChNum));    
+    //GDMA_PRINT("CTRL: Write %08X to %8X\n", Data, GDMA_CTRL_REG(NewEntry->ChNum));    
      //if there is no interrupt handler, this function will 
     //return 1 until GDMA done.
     if(NewEntry->DoneIntCallback==NULL) { 
@@ -800,30 +802,29 @@ irqreturn_t GdmaIrqHandler(
 	if(GdmaUnMaskStatus & (0x1 << (UNMASK_INT_STATUS(Ch))) ) {
 	    if(GdmaUnMaskIntCallback[Ch] != NULL) {
 		GdmaUnMaskIntCallback[Ch](Ch);
-	      // printk("GdmaUnMaskIntCallback \n");	
+	      // printk("GdmaUnMaskIntCallback \n");
 	    }
 	}
      }	
-  
     //write 1 clear
 #if defined (CONFIG_RALINK_RT3052)	
      GDMA_WRITE_REG(RALINK_GDMAISTS, GdmaDoneStatus); 
 #elif defined (CONFIG_RALINK_RT3883) || defined (CONFIG_RALINK_RT3352) || defined (CONFIG_RALINK_RT5350) || defined (CONFIG_RALINK_RT6855) || defined (CONFIG_RALINK_RT6855A) || defined (CONFIG_RALINK_MT7620)  ||  defined (CONFIG_RALINK_MT7621) || defined (CONFIG_RALINK_MT7628) || defined (CONFIG_ARCH_MT7623)
      GDMA_WRITE_REG(RALINK_GDMA_DONEINT, GdmaDoneStatus); 
 #endif
-
+	
      //printk("interrupt status = %x \n", GdmaDoneStatus);
      //processing done
      for(Ch=0;Ch<MAX_GDMA_CHANNEL;Ch++) {
 			if(GdmaDoneStatus & (0x1<<Ch)) {
-	    	if(GdmaDoneIntCallback[Ch] != NULL) {
-	    		//printk("*************Interrupt Ch=%d***********\n", Ch);
-					GdmaDoneIntCallback[Ch](Ch); 
-	    	}
+		    	if(GdmaDoneIntCallback[Ch] != NULL) {
+						GdmaDoneIntCallback[Ch](Ch); 
+						//printk("DoneInt Ch=%d\n", Ch);
+		    	}
 			}
     }
 
-//printk("interrupt status clear = %x \n", GDMA_READ_REG(RALINK_GDMA_DONEINT));
+	//printk("interrupt  clear = %x \n", GDMA_READ_REG(RALINK_GDMA_DONEINT));
     spin_unlock_irqrestore(&gdma_int_lock, flags);
 
     return IRQ_HANDLED;

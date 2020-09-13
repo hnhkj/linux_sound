@@ -82,7 +82,7 @@ const struct snd_soc_component_driver mt76xx_i2s_component = {
 
 struct snd_soc_dai_driver mt76xx_i2s_dai = {
 	.playback = {
-		.channels_min = 1,
+		.channels_min = 2,
 		.channels_max = 2,
 		.rates = (SNDRV_PCM_RATE_8000|SNDRV_PCM_RATE_11025|\
 		SNDRV_PCM_RATE_16000|SNDRV_PCM_RATE_22050|SNDRV_PCM_RATE_32000|\
@@ -92,7 +92,7 @@ struct snd_soc_dai_driver mt76xx_i2s_dai = {
 				SNDRV_PCM_FMTBIT_S24_LE),
 	},
 	.capture = {
-		.channels_min = 1,
+		.channels_min = 2,
 		.channels_max = 2,
 		.rates = (SNDRV_PCM_RATE_8000|SNDRV_PCM_RATE_11025|\
 				SNDRV_PCM_RATE_16000|SNDRV_PCM_RATE_22050|SNDRV_PCM_RATE_32000|\
@@ -144,9 +144,9 @@ static int mt76xx_i2s_rec_prepare(struct snd_pcm_substream *substream, struct sn
 	i2s_config_type* rtd = (i2s_config_type*)substream->runtime->private_data;
 	rtd->pss[SNDRV_PCM_STREAM_CAPTURE] = substream;
 	if(! rtd->i2sStat[SNDRV_PCM_STREAM_CAPTURE]) {
+		gdma_En_Switch(rtd, STREAM_CAPTURE, GDMA_I2S_EN);
 		i2s_reset_rx_param(rtd);
 		i2s_rx_config(rtd);
-		gdma_En_Switch(rtd, STREAM_CAPTURE, GDMA_I2S_EN);
 
 		if(rtd->bTxDMAEnable==0)
 			i2s_clock_enable(rtd);
@@ -168,14 +168,15 @@ static int mt76xx_i2s_rec_prepare(struct snd_pcm_substream *substream, struct sn
 static int  mt76xx_i2s_startup(struct snd_pcm_substream *substream,
 		       struct snd_soc_dai *dai)
 {
-
-	//printk("******* %s *******\n", __func__);
-    	if((!pi2s_config->i2sStat[SNDRV_PCM_STREAM_PLAYBACK]) && (!pi2s_config->i2sStat[SNDRV_PCM_STREAM_CAPTURE])){
+    if((!pi2s_config->i2sStat[SNDRV_PCM_STREAM_PLAYBACK]) && 
+	   (!pi2s_config->i2sStat[SNDRV_PCM_STREAM_CAPTURE]) && 
+	   (pi2s_config->mmap_index == 0)){
 		i2s_startup();
     		if(!pi2s_config)
     			return -1;
     		i2s_reset_config(pi2s_config);
-    	}
+			
+    }
 	substream->runtime->private_data = pi2s_config;
 	return 0;
 }
@@ -187,7 +188,6 @@ static int mt76xx_i2s_hw_params(struct snd_pcm_substream *substream,\
 	//unsigned long data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	i2s_config_type* rtd = runtime->private_data;
-
 	//printk("******* %s *******\n", __func__);
 	switch(params_rate(params)){
 	case 8000:
@@ -210,12 +210,13 @@ static int mt76xx_i2s_hw_params(struct snd_pcm_substream *substream,\
 		//MSG("audio sampling rate %u should be %d ~ %d Hz\n", (u32)params_rate(params), MIN_SRATE_HZ, MAX_SRATE_HZ);
 		break;
 	}
-	if(srate){
+	if(srate){ 
 		if((rtd->bRxDMAEnable != GDMA_I2S_EN) && (rtd->bTxDMAEnable != GDMA_I2S_EN)){
 			rtd->srate = srate;
 			MSG("set audio sampling rate to %d Hz\n", rtd->srate);
 		}
 	}
+	
 
 	return 0;
 }

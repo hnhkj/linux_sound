@@ -42,7 +42,7 @@
 #endif
 
 //#define CONFIG_I2S_MS_CTRL		
-//#define CONFIG_I2S_MS_MODE
+#define CONFIG_I2S_MS_MODE
 //#define memory_test
 
 #if defined (CONFIG_ARCH_MT7623)
@@ -212,7 +212,9 @@
 
 /* Constant definition */
 #define NFF_THRES		4
-#define I2S_PAGE_SIZE		3072//(3*4096)//(1152*2*2*2)
+//#define I2S_PAGE_SIZE		3072//(3*4096)//(1152*2*2*2)
+#define I2S_PAGE_SIZE		6144//(3*4096)//(1152*2*2*2)
+
 #define I2S_MIN_PAGE_SIZE	4096
 #define MAX_I2S_PAGE		8
 #define I2S_TOTAL_PAGE_SIZE 	(I2S_PAGE_SIZE*MAX_I2S_PAGE)
@@ -344,6 +346,8 @@ typedef struct i2s_config_t
 	int enLable;
 	int micboost;
 	int micin;
+	int is_tx_mmap;
+	int is_rx_mmap;
 	
 	/* parameters fo ALSA */
 	int bALSAEnable;
@@ -426,9 +430,10 @@ typedef struct i2s_config_t
 
 }i2s_config_type;
 
+int i2s_mmap_alloc(unsigned long size,int dir);
 
 void i2s_gen_test_pattern(void);
-int i2s_mem_unmap(i2s_config_type* ptri2s_config);
+int i2s_mem_unmap(i2s_config_type* ptri2s_config,int dir);
 int i2s_param_init(i2s_config_type* ptri2s_config);
 int i2s_txbuf_alloc(i2s_config_type* ptri2s_config);
 int i2s_rxbuf_alloc(i2s_config_type* ptri2s_config);
@@ -510,7 +515,8 @@ int i2s_audio_exchange(i2s_config_type* ptri2s_config,int dir,unsigned long arg)
 void gdma_unmask_handler(u32 dma_ch);
 char* i2s_memPool_Alloc(i2s_config_type* ptri2s_config,int dir);
 void i2s_memPool_free(i2s_config_type* ptri2s_config,int dir);
-u32 i2s_mmap_phys_addr(i2s_config_type* ptri2s_config);
+u32 i2s_mmap_phys_addr(i2s_config_type* ptri2s_config,int dir);
+
 
 #if !defined(CONFIG_I2S_TXRX)
 #define GdmaI2sRx	//GdmaI2sRx

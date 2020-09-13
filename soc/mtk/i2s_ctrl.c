@@ -97,7 +97,7 @@ static int i2s_ioctl(struct inode *inode, struct file *file, unsigned int cmd, u
 static int i2s_mmap(struct file *file, struct vm_area_struct *vma);
 static int i2s_open(struct inode *inode, struct file *file);
 static int i2s_release(struct inode *inode, struct file *file);
-int i2s_mmap_alloc(unsigned long size);
+int i2s_mmap_alloc(unsigned long size,int dir);
 int i2s_mmap_remap(struct vm_area_struct *vma, unsigned long size);
 
 /* global varable definitions */
@@ -377,12 +377,17 @@ static int i2s_release(struct inode *inode, struct file *filp)
 	ptri2s_config = filp->private_data;
 	if(ptri2s_config==NULL)
 		goto EXIT;
-#ifdef CONFIG_I2S_MMAP	
-	i2s_mem_unmap(ptri2s_config);
-#else
-	i2s_txbuf_free(ptri2s_config);
-	i2s_rxbuf_free(ptri2s_config);
-#endif	
+
+	if(pi2s_config->is_tx_mmap)
+		i2s_mem_unmap(ptri2s_config,STREAM_PLAYBACK);
+	else
+		i2s_txbuf_free(ptri2s_config);
+
+	if(pi2s_config->is_rx_mmap)
+		i2s_mem_unmap(ptri2s_config,STREAM_CAPTURE);
+	else
+		i2s_rxbuf_free(ptri2s_config);
+	
 	/* free buffer */
 	i2s_txPagebuf_free(ptri2s_config);
 	i2s_rxPagebuf_free(ptri2s_config);	
@@ -391,27 +396,33 @@ EXIT:
 	return 0;
 }
 
-int i2s_mmap_alloc(unsigned long size)
+int i2s_mmap_alloc(unsigned long size,int dir)
 {
 	int i;
 	u32 page_size;
        	int first_index;
 
 	page_size = I2S_PAGE_SIZE;
-
+	if(STREAM_PLAYBACK == dir){
+		pi2s_config->mmap_index = 0;
+	}
+	else{
+		pi2s_config->mmap_index = MAX_I2S_PAGE;
+	}
+	
 	if ((pi2s_config->mmap_index == 0) || (pi2s_config->mmap_index == MAX_I2S_PAGE))
 	{
 		MSG("mmap_index=%d\n", pi2s_config->mmap_index);
 
 		first_index = pi2s_config->mmap_index;
-	pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index] = kmalloc(size, GFP_DMA);
-	i2s_mmap_addr[pi2s_config->mmap_index] = (dma_addr_t)dma_map_single(NULL, pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index], size, DMA_BIDIRECTIONAL);
+		pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index] = kmalloc(size, GFP_DMA);
+		i2s_mmap_addr[pi2s_config->mmap_index] = (dma_addr_t)dma_map_single(NULL, pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index], size, DMA_BIDIRECTIONAL);
 	
-	if( pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index] == NULL ) 
-	{
-		MSG("i2s_mmap failed\n");
-		return -1;
-	}
+		if( pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index] == NULL ) 
+		{
+			MSG("i2s_mmap failed\n");
+			return -1;
+		}
 	}
 	else
 	{
@@ -419,7 +430,7 @@ int i2s_mmap_alloc(unsigned long size)
 		return -1;	
 	}
 	
-	_printk("MMAP[%d]=0x%08X, i2s_mmap_addr[%d]=0x%08x\n",
+	MSG("MMAP[%d]=0x%08X, i2s_mmap_addr[%d]=0x%08x\n",
 		pi2s_config->mmap_index, (u32)pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index], 
                 pi2s_config->mmap_index, i2s_mmap_addr[pi2s_config->mmap_index]);
 	
@@ -431,7 +442,7 @@ int i2s_mmap_alloc(unsigned long size)
 		i2s_mmap_addr[pi2s_config->mmap_index] = i2s_mmap_addr[first_index] + i*page_size;
 		pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index] = pi2s_config->pMMAPBufPtr[first_index] + i*page_size;
 
-		_printk("MMAP[%d]=0x%08X, i2s_mmap_addr[%d]=0x%08x\n",pi2s_config->mmap_index, (u32)pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index], pi2s_config->mmap_index, i2s_mmap_addr[pi2s_config->mmap_index]);
+		MSG("MMAP[%d]=0x%08X, i2s_mmap_addr[%d]=0x%08x\n",pi2s_config->mmap_index, (u32)pi2s_config->pMMAPBufPtr[pi2s_config->mmap_index], pi2s_config->mmap_index, i2s_mmap_addr[pi2s_config->mmap_index]);
 	
 		/* Notice: The last mmap_index's value should be MAX_I2S_PAGE or MAX_I2S_PAGE*2 */
 		pi2s_config->mmap_index++;
@@ -443,10 +454,10 @@ int i2s_mmap_alloc(unsigned long size)
 int i2s_mmap_remap(struct vm_area_struct *vma, unsigned long size)
 {
 	int nRet;
-
 	if((pi2s_config->pMMAPBufPtr[0]!=NULL) && (pi2s_config->mmap_index == MAX_I2S_PAGE))
 	{
 		MSG("i2s_mmap_remap:0\n");
+		//move left 12bit, why?
 		nRet = remap_pfn_range(vma, vma->vm_start, virt_to_phys((void *)pi2s_config->pMMAPBufPtr[0]) >> PAGE_SHIFT,  size, vma->vm_page_prot);
 
 		if( nRet != 0 )
@@ -478,12 +489,14 @@ static int i2s_mmap(struct file *filp, struct vm_area_struct *vma)
 	_printk("page_size=%d, ksize=%lu\n", I2S_PAGE_SIZE, size);
 
 	if((pi2s_config->pMMAPBufPtr[0]==NULL)&&(pi2s_config->mmap_index!=0))
-		pi2s_config->mmap_index = 0;
-		
+		{
+			MSG(">>>>>>pi2s_config->mmap_index = 0\n");
+			pi2s_config->mmap_index = 0;
+		}
 	_printk("%s: vm_start=%08X,vm_end=%08X\n", __func__, (u32)vma->vm_start, (u32)vma->vm_end);
 		
 	/* Do memory allocate and dma sync */
-	i2s_mmap_alloc(size);
+	i2s_mmap_alloc(size,STREAM_PLAYBACK);
 
 	i2s_mmap_remap(vma, size);
 
@@ -491,28 +504,44 @@ static int i2s_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-int i2s_mem_unmap(i2s_config_type* ptri2s_config)
+int i2s_mem_unmap(i2s_config_type* ptri2s_config,int dir)
 {
 	u32 page_size;
 
 	page_size = I2S_PAGE_SIZE;
-
-	if(ptri2s_config->pMMAPBufPtr[0])
+	if(STREAM_PLAYBACK == dir){
+		if(ptri2s_config->pMMAPBufPtr[0]){
+			printk("ummap MMAP[0]=0x%08X\n", (u32)ptri2s_config->pMMAPBufPtr[0]);
+			dma_unmap_single(NULL, i2s_mmap_addr[0], MAX_I2S_PAGE*page_size, DMA_BIDIRECTIONAL);
+			kfree(ptri2s_config->pMMAPBufPtr[0]);
+			ptri2s_config->pMMAPBufPtr[0] = NULL;
+		}
+	}
+	else{
+		if(ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]){
+			printk("ummap MMAP[%d]=0x%08X\n", MAX_I2S_PAGE, (u32)ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]);
+			dma_unmap_single(NULL, i2s_mmap_addr[MAX_I2S_PAGE], MAX_I2S_PAGE*page_size, DMA_BIDIRECTIONAL);
+			kfree(ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]);
+			ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE] = NULL;
+		}
+	}
+#if 0
+	if(ptri2s_config->pMMAPBufPtr[0]&& (ptri2s_config->mmap_index != 0))
 	{	
-		_printk("ummap MMAP[0]=0x%08X\n", (u32)ptri2s_config->pMMAPBufPtr[0]);
+		printk("ummap MMAP[0]=0x%08X\n", (u32)ptri2s_config->pMMAPBufPtr[0]);
 		dma_unmap_single(NULL, i2s_mmap_addr[0], MAX_I2S_PAGE*page_size, DMA_BIDIRECTIONAL);
 		kfree(ptri2s_config->pMMAPBufPtr[0]);
 	}
 
-	if(ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE])
+	if(ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]&& (ptri2s_config->mmap_index != 0))
 	{
-		_printk("ummap MMAP[%d]=0x%08X\n", MAX_I2S_PAGE, (u32)ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]);
+		printk("ummap MMAP[%d]=0x%08X\n", MAX_I2S_PAGE, (u32)ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]);
 		dma_unmap_single(NULL, i2s_mmap_addr[MAX_I2S_PAGE], MAX_I2S_PAGE*page_size, DMA_BIDIRECTIONAL);
 		kfree(ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]);
 	}
 
 	ptri2s_config->mmap_index = 0;
-	
+#endif	
 	return 0;
 }
 
@@ -543,6 +572,9 @@ int i2s_param_init(i2s_config_type* ptri2s_config)
 	ptri2s_config->micboost = 0;
 	ptri2s_config->micin = 0;
 
+	ptri2s_config->is_rx_mmap = 0;
+	ptri2s_config->is_tx_mmap = 0;
+
 	return 0;
 }
 
@@ -552,12 +584,12 @@ int i2s_txbuf_alloc(i2s_config_type* ptri2s_config)
 
 	for( i = 0 ; i < MAX_I2S_PAGE ; i ++ )
         {
-#if defined(CONFIG_I2S_MMAP)
-		ptri2s_config->pMMAPTxBufPtr[i] = ptri2s_config->pMMAPBufPtr[i];
-#else
+			if(ptri2s_config->is_tx_mmap)
+				ptri2s_config->pMMAPTxBufPtr[i] = ptri2s_config->pMMAPBufPtr[i];
+			else{
                 if(ptri2s_config->pMMAPTxBufPtr[i]==NULL)
                 	ptri2s_config->pMMAPTxBufPtr[i] = kmalloc(I2S_PAGE_SIZE, GFP_KERNEL);
-#endif
+			}
 		memset(ptri2s_config->pMMAPTxBufPtr[i], 0, I2S_PAGE_SIZE);
 	}
 
@@ -570,12 +602,12 @@ int i2s_rxbuf_alloc(i2s_config_type* ptri2s_config)
 
 	for( i = 0 ; i < MAX_I2S_PAGE ; i ++ )
         {
-#if defined(CONFIG_I2S_MMAP)
-        	ptri2s_config->pMMAPRxBufPtr[i] = ptri2s_config->pMMAPBufPtr[i+(ptri2s_config->mmap_index-MAX_I2S_PAGE)];
-#else
-                if(ptri2s_config->pMMAPRxBufPtr[i]==NULL)
-			ptri2s_config->pMMAPRxBufPtr[i] = kmalloc(I2S_PAGE_SIZE, GFP_KERNEL);
-#endif
+			if(ptri2s_config->is_rx_mmap)
+				ptri2s_config->pMMAPRxBufPtr[i] = ptri2s_config->pMMAPBufPtr[i+MAX_I2S_PAGE];
+			else{
+				if(ptri2s_config->pMMAPRxBufPtr[i]==NULL)
+					ptri2s_config->pMMAPRxBufPtr[i] = kmalloc(I2S_PAGE_SIZE, GFP_KERNEL);
+			}
 		memset(ptri2s_config->pMMAPRxBufPtr[i], 0, I2S_PAGE_SIZE);
         }
 
@@ -644,12 +676,12 @@ int i2s_txbuf_free(i2s_config_type* ptri2s_config)
 	{
 		if(ptri2s_config->pMMAPTxBufPtr[i] != NULL)
 		{
-#if defined(CONFIG_I2S_MMAP)
-                        ptri2s_config->pMMAPTxBufPtr[i] = NULL;
-#else
-			kfree(ptri2s_config->pMMAPTxBufPtr[i]);
-			ptri2s_config->pMMAPTxBufPtr[i] = NULL;
-#endif
+			if(ptri2s_config->is_tx_mmap)
+				ptri2s_config->pMMAPTxBufPtr[i] = NULL;
+			else{
+				kfree(ptri2s_config->pMMAPTxBufPtr[i]);
+				ptri2s_config->pMMAPTxBufPtr[i] = NULL;
+			}
 		}
 	}
 	return 0;
@@ -663,12 +695,12 @@ int i2s_rxbuf_free(i2s_config_type* ptri2s_config)
 	{
 		if(ptri2s_config->pMMAPRxBufPtr[i] != NULL)
 		{
-#if defined(CONFIG_I2S_MMAP)
-                        ptri2s_config->pMMAPRxBufPtr[i] = NULL;
-#else
-			kfree(ptri2s_config->pMMAPRxBufPtr[i]);
-			ptri2s_config->pMMAPRxBufPtr[i] = NULL;
-#endif
+			if(ptri2s_config->is_rx_mmap)
+				ptri2s_config->pMMAPRxBufPtr[i] = NULL;
+			else{
+				kfree(ptri2s_config->pMMAPRxBufPtr[i]);
+				ptri2s_config->pMMAPRxBufPtr[i] = NULL;
+			}
 		}
 	}
 	
@@ -1788,8 +1820,8 @@ int i2s_clock_disable(i2s_config_type* ptri2s_config)
 
 	/* disable internal MCLK */
 #if defined(CONFIG_I2S_IN_MCLK)	
-	i2s_refclk_disable();
-	i2s_refclk_gpio_in_config();
+	//i2s_refclk_disable();
+	//i2s_refclk_gpio_in_config();
 #endif
 	return 0;
 }	
@@ -1984,7 +2016,7 @@ int i2s_tx_enable(i2s_config_type* ptri2s_config)
 	data = i2s_inw(I2S_I2SCFG);
 	data |= REGBIT(0x1, I2S_EN);
 	i2s_outw(I2S_I2SCFG, data);
-	
+	pi2s_config->bTxDMAEnable = 1;
 	MSG("i2s_tx_enable done\n");
 	return I2S_OK;
 }
@@ -2013,6 +2045,7 @@ int i2s_rx_enable(i2s_config_type* ptri2s_config)
 	data = i2s_inw(I2S_I2SCFG);
 	data |= REGBIT(0x1, I2S_EN);
 	i2s_outw(I2S_I2SCFG, data);
+	ptri2s_config->bRxDMAEnable = 1;
 	
 	MSG("i2s_rx_enable done\n");
 	return I2S_OK;
@@ -2037,6 +2070,7 @@ int i2s_tx_disable(i2s_config_type* ptri2s_config)
 #endif	
 	if(ptri2s_config->bRxDMAEnable==0)
 	{
+		MSG("=====%s+++++:%d\n",__func__,ptri2s_config->bTxDMAEnable);
 		ptri2s_config->bTxDMAEnable = 0;
 		data &= ~REGBIT(0x1, I2S_DMA_EN);
                 data &= ~REGBIT(0x1, I2S_EN);
@@ -2075,49 +2109,51 @@ int i2s_rx_disable(i2s_config_type* ptri2s_config)
 int i2s_dma_tx_transf_data(i2s_config_type* ptri2s_config, u32 dma_ch)
 {
 	int tx_r_idx;
- 
-	if ((pi2s_config->bALSAEnable==1) && (pi2s_config->bALSAMMAPEnable==1))
+
+	if((pi2s_config->bALSAEnable==1) && (pi2s_config->bALSAMMAPEnable==1)&&(pi2s_config->mmap_index <= MAX_I2S_PAGE))
 		tx_r_idx = (pi2s_config->tx_r_idx + ALSA_MMAP_IDX_SHIFT)%MAX_I2S_PAGE;
 	else
 		tx_r_idx = pi2s_config->tx_r_idx;
-
+	//MSG(">>>>>>  tx_r_idx:%d\n",tx_r_idx);
 	if(dma_ch==GDMA_I2S_TX0)
         {
-#if defined(CONFIG_I2S_MMAP)
-		dma_sync_single_for_device(NULL,  i2s_mmap_addr[tx_r_idx], I2S_PAGE_SIZE, DMA_TO_DEVICE);
+        	if(pi2s_config->is_tx_mmap){
+				dma_sync_single_for_device(NULL,  i2s_mmap_addr[tx_r_idx], I2S_PAGE_SIZE, DMA_TO_DEVICE);
 #if defined(ARM_ARCH)
-		GdmaI2sTx(i2s_mmap_addr[tx_r_idx], I2S_TX_FIFO_WREG_PHY, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx(i2s_mmap_addr[tx_r_idx], I2S_TX_FIFO_WREG_PHY, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #else
-                GdmaI2sTx((u32)(pi2s_config->pMMAPTxBufPtr[tx_r_idx]), I2S_TX_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx((u32)(pi2s_config->pMMAPTxBufPtr[tx_r_idx]), I2S_TX_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #endif
-#else
-                memcpy(pi2s_config->pPage0TxBuf8ptr,  pi2s_config->pMMAPTxBufPtr[tx_r_idx], I2S_PAGE_SIZE);
+			}
+			else{
+				memcpy(pi2s_config->pPage0TxBuf8ptr,  pi2s_config->pMMAPTxBufPtr[tx_r_idx], I2S_PAGE_SIZE);
 #if defined(ARM_ARCH)
-		GdmaI2sTx(i2s_txdma_addr0, I2S_TX_FIFO_WREG_PHY, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx(i2s_txdma_addr0, I2S_TX_FIFO_WREG_PHY, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #else
-                GdmaI2sTx((u32)(pi2s_config->pPage0TxBuf8ptr), I2S_TX_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx((u32)(pi2s_config->pPage0TxBuf8ptr), I2S_TX_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #endif
-#endif
-                pi2s_config->dmach = GDMA_I2S_TX0;
-                pi2s_config->tx_r_idx = (pi2s_config->tx_r_idx+1)%MAX_I2S_PAGE;
+			}
+            pi2s_config->dmach = GDMA_I2S_TX0;
+			pi2s_config->tx_r_idx = (pi2s_config->tx_r_idx+1)%MAX_I2S_PAGE;
 	}
         else
         {
-#if defined(CONFIG_I2S_MMAP)
-		dma_sync_single_for_device(NULL,  i2s_mmap_addr[tx_r_idx], I2S_PAGE_SIZE, DMA_TO_DEVICE);
+        	if(pi2s_config->is_tx_mmap){
+				dma_sync_single_for_device(NULL,  i2s_mmap_addr[tx_r_idx], I2S_PAGE_SIZE, DMA_TO_DEVICE);
 #if defined(ARM_ARCH)
-		GdmaI2sTx(i2s_mmap_addr[tx_r_idx], I2S_TX_FIFO_WREG_PHY, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx(i2s_mmap_addr[tx_r_idx], I2S_TX_FIFO_WREG_PHY, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #else
-                GdmaI2sTx((u32)(pi2s_config->pMMAPTxBufPtr[tx_r_idx]), I2S_TX_FIFO_WREG, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx((u32)(pi2s_config->pMMAPTxBufPtr[tx_r_idx]), I2S_TX_FIFO_WREG, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #endif
-#else
-                memcpy(pi2s_config->pPage1TxBuf8ptr,  pi2s_config->pMMAPTxBufPtr[tx_r_idx], I2S_PAGE_SIZE);
+			}
+			else{
+				memcpy(pi2s_config->pPage1TxBuf8ptr,  pi2s_config->pMMAPTxBufPtr[tx_r_idx], I2S_PAGE_SIZE);
 #if defined(ARM_ARCH)
-		GdmaI2sTx(i2s_txdma_addr1, I2S_TX_FIFO_WREG_PHY, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx(i2s_txdma_addr1, I2S_TX_FIFO_WREG_PHY, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #else
-                GdmaI2sTx((u32)(pi2s_config->pPage1TxBuf8ptr), I2S_TX_FIFO_WREG, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+				GdmaI2sTx((u32)(pi2s_config->pPage1TxBuf8ptr), I2S_TX_FIFO_WREG, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #endif
-#endif
+			}
                 pi2s_config->dmach = GDMA_I2S_TX1;
                 pi2s_config->tx_r_idx = (pi2s_config->tx_r_idx+1)%MAX_I2S_PAGE;
 	}
@@ -2137,7 +2173,8 @@ int i2s_dma_tx_transf_zero(i2s_config_type* ptri2s_config, u32 dma_ch)
 #if defined(ARM_ARCH)
 		GdmaI2sTx(i2s_txdma_addr0, I2S_TX_FIFO_WREG_PHY, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #else
-                GdmaI2sTx((u32)pi2s_config->pPage0TxBuf8ptr, I2S_TX_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
+			MSG("+++++++%s+++++\n",__func__);
+            GdmaI2sTx((u32)pi2s_config->pPage0TxBuf8ptr, I2S_TX_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #endif
         }
         else
@@ -2162,45 +2199,45 @@ int i2s_dma_rx_transf_data(i2s_config_type* ptri2s_config, u32 dma_ch)
 		rx_w_idx = (pi2s_config->rx_w_idx+ALSA_MMAP_IDX_SHIFT)%MAX_I2S_PAGE;
 	else
 		rx_w_idx = (pi2s_config->rx_w_idx)%MAX_I2S_PAGE;
-
+	//MSG("=========== rx_w_idx:%d\n",rx_w_idx+MAX_I2S_PAGE);
 	if(dma_ch==GDMA_I2S_RX0)
         {
-                
-#ifdef CONFIG_I2S_MMAP
-                dma_sync_single_for_device(NULL,  i2s_mmap_addr[rx_w_idx+(pi2s_config->mmap_index-MAX_I2S_PAGE)], I2S_PAGE_SIZE, DMA_FROM_DEVICE);
+             if(ptri2s_config->is_rx_mmap){
+				  dma_sync_single_for_device(NULL,	i2s_mmap_addr[rx_w_idx+MAX_I2S_PAGE], I2S_PAGE_SIZE, DMA_FROM_DEVICE);
 #if defined(ARM_ARCH)
-		GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, (u32)i2s_mmap_addr[rx_w_idx+(pi2s_config->mmap_index-MAX_I2S_PAGE)], 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				 GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, (u32)i2s_mmap_addr[rx_w_idx+MAX_I2S_PAGE], 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #else
-                GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pMMAPRxBufPtr[rx_w_idx]), 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				 GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pMMAPRxBufPtr[rx_w_idx]), 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #endif
-#else
-                memcpy(pi2s_config->pMMAPRxBufPtr[rx_w_idx], pi2s_config->pPage0RxBuf8ptr, I2S_PAGE_SIZE);
+			 }
+			 else{
+				memcpy(pi2s_config->pMMAPRxBufPtr[rx_w_idx], pi2s_config->pPage0RxBuf8ptr, I2S_PAGE_SIZE);
 #if defined(ARM_ARCH)
-		GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, i2s_rxdma_addr0, 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, i2s_rxdma_addr0, 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #else
-                GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pPage0RxBuf8ptr), 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pPage0RxBuf8ptr), 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #endif
-#endif
-                pi2s_config->dmach = GDMA_I2S_RX0;
+			 }
+             pi2s_config->dmach = GDMA_I2S_RX0;
         }
 	else
         {
-                
-#ifdef CONFIG_I2S_MMAP
-                dma_sync_single_for_device(NULL,  i2s_mmap_addr[rx_w_idx+(pi2s_config->mmap_index-MAX_I2S_PAGE)], I2S_PAGE_SIZE, DMA_FROM_DEVICE);
+             if(ptri2s_config->is_rx_mmap){
+				dma_sync_single_for_device(NULL,  i2s_mmap_addr[rx_w_idx+ MAX_I2S_PAGE], I2S_PAGE_SIZE, DMA_FROM_DEVICE);
 #if defined(ARM_ARCH)
-		GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, (u32)i2s_mmap_addr[rx_w_idx+(pi2s_config->mmap_index-MAX_I2S_PAGE)], 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, (u32)i2s_mmap_addr[rx_w_idx+MAX_I2S_PAGE], 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #else
-                GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pMMAPRxBufPtr[rx_w_idx]), 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pMMAPRxBufPtr[rx_w_idx]), 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #endif
-#else
-                memcpy(pi2s_config->pMMAPRxBufPtr[rx_w_idx], pi2s_config->pPage1RxBuf8ptr, I2S_PAGE_SIZE);
+			 }
+			 else{
+				memcpy(pi2s_config->pMMAPRxBufPtr[rx_w_idx], pi2s_config->pPage1RxBuf8ptr, I2S_PAGE_SIZE);
 #if defined(ARM_ARCH)
-		GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, i2s_rxdma_addr1, 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, i2s_rxdma_addr1, 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #else
-                GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pPage1RxBuf8ptr), 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+				GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)(pi2s_config->pPage1RxBuf8ptr), 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #endif
-#endif
+			 }
                 pi2s_config->dmach = GDMA_I2S_RX1;
 
         }
@@ -2220,7 +2257,7 @@ int i2s_dma_rx_transf_zero(i2s_config_type* ptri2s_config, u32 dma_ch)
 #if defined(ARM_ARCH)
 		GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, i2s_rxdma_addr0, 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #else
-        	GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)pi2s_config->pPage0RxBuf8ptr, 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+          GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)pi2s_config->pPage0RxBuf8ptr, 0, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #endif
         }
         else
@@ -2229,7 +2266,7 @@ int i2s_dma_rx_transf_zero(i2s_config_type* ptri2s_config, u32 dma_ch)
 #if defined(ARM_ARCH)
 		GdmaI2sRx(I2S_RX_FIFO_RREG_PHY, i2s_rxdma_addr1, 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #else
-                GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)pi2s_config->pPage1RxBuf8ptr, 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
+         GdmaI2sRx(I2S_RX_FIFO_RREG, (u32)pi2s_config->pPage1RxBuf8ptr, 1, I2S_PAGE_SIZE, i2s_dma_rx_handler, i2s_dma_rx_unmask_handler);
 #endif
         }
 	return 0;
@@ -2238,6 +2275,7 @@ int i2s_dma_rx_transf_zero(i2s_config_type* ptri2s_config, u32 dma_ch)
 void i2s_dma_tx_handler(u32 dma_ch)
 {
 	pi2s_config->enLable = 1; /* TX:enLabel=1; RX:enLabel=2 */
+	//printk("******* %s *******\n", __func__);
 
 	if(pi2s_config->bTxDMAEnable==0) 
 	{
@@ -2255,7 +2293,7 @@ void i2s_dma_tx_handler(u32 dma_ch)
 			if (pi2s_config->tx_stop_cnt == 3)
 			{
                         	wake_up_interruptible(&(pi2s_config->i2s_tx_qh));
-				_printk("T:wake up!!\n");
+				MSG("T:wake up!!\n");
 			}
 		}
 		return;
@@ -2272,27 +2310,29 @@ void i2s_dma_tx_handler(u32 dma_ch)
 		if(pi2s_config->dmaStat[STREAM_PLAYBACK])
 		{
 			if(!pi2s_config->bTrigger[STREAM_PLAYBACK]){
-				//_printk("trigger stop: rIdx:%d widx:%d\n", pi2s_config->tx_r_idx,pi2s_config->tx_w_idx);
-                                i2s_dma_tx_transf_zero(pi2s_config, dma_ch);
-                                if(pi2s_config->bPreTrigger[STREAM_PLAYBACK]){
-                                        /* mtk04880 commented:
-                                         * for corner case, there are cases which ALSA Trigger stop before disabling DMA.
-                                         * For which case, it needs to keep call snd_pcm_elapased to keep ALSA hw ptr updating.
-                                         * It is so called post stop handlment.
-                                         */
-                                        //_printk("post-stop\n");
-                                        goto EXIT;
-                                }
-                                else{
-                                        //_printk("pre-stop\n");
-                                        wake_up_interruptible(&(pi2s_config->i2s_tx_qh));
-                                        return;
-                                }
-                        }
-                        else{
-                                if(!pi2s_config->bPreTrigger[STREAM_PLAYBACK])
-                                        pi2s_config->bPreTrigger[STREAM_PLAYBACK] = 1;
-
+				MSG("trigger stop: rIdx:%d widx:%d\n", pi2s_config->tx_r_idx,pi2s_config->tx_w_idx);
+                i2s_dma_tx_transf_zero(pi2s_config, dma_ch);
+                //i2s_dma_tx_transf_data(pi2s_config, dma_ch);
+                if(pi2s_config->bPreTrigger[STREAM_PLAYBACK]){
+                    /* mtk04880 commented:
+                     * for corner case, there are cases which ALSA Trigger stop before disabling DMA.
+                     * For which case, it needs to keep call snd_pcm_elapased to keep ALSA hw ptr updating.
+                     * It is so called post stop handlment.
+                     */
+                    //MSG("post-stop\n");
+                    goto EXIT;
+                }
+                else{
+                    //MSG("pre-stop\n");
+                    wake_up_interruptible(&(pi2s_config->i2s_tx_qh));
+                    return;
+                }
+             }
+            else{
+                    if(!pi2s_config->bPreTrigger[STREAM_PLAYBACK]){
+                            pi2s_config->bPreTrigger[STREAM_PLAYBACK] = 1;
+							MSG("bPreTrigger:STREAM_PLAYBACK\n");
+                    	}
 			}
 		}	
 	}
@@ -2346,6 +2386,7 @@ EXIT:
 void i2s_dma_rx_handler(u32 dma_ch)
 {
 	pi2s_config->enLable = 2; /* TX:enLabel=1; RX:enLabel=2 */
+	//printk("******* %s *******\n", __func__);
 #if defined(CONFIG_I2S_TXRX)
 	if(pi2s_config->rx_isr_cnt==0)
 	{
@@ -2362,7 +2403,7 @@ void i2s_dma_rx_handler(u32 dma_ch)
 	{
 		pi2s_config->rx_stop_cnt++;
 		i2s_dma_rx_soft_stop(pi2s_config, dma_ch);
-		MSG("rx_stop=%d\n", pi2s_config->rx_stop_cnt);
+		MSG("<-------------------->rx_stop=%d\n", pi2s_config->rx_stop_cnt);
 
 		if(pi2s_config->rx_stop_cnt == 2)
 		{
@@ -2376,10 +2417,10 @@ void i2s_dma_rx_handler(u32 dma_ch)
 	{
 		 if(pi2s_config->dmaStat[STREAM_CAPTURE]){
 			if(!pi2s_config->bTrigger[STREAM_CAPTURE]){
-                                MSG("trigger stop: rIdx:%d widx:%d\n", pi2s_config->rx_r_idx,pi2s_config->rx_w_idx);
-				i2s_dma_rx_transf_zero(pi2s_config, dma_ch);
-                                wake_up_interruptible(&(pi2s_config->i2s_rx_qh));
-                                return;
+                    //MSG("trigger stop: rIdx:%d widx:%d\n", pi2s_config->rx_r_idx,pi2s_config->rx_w_idx);
+					i2s_dma_rx_transf_zero(pi2s_config, dma_ch);
+                    wake_up_interruptible(&(pi2s_config->i2s_rx_qh));
+                    return;
 			}
 		 }
 	}
@@ -2560,6 +2601,7 @@ void i2s_tx_task(unsigned long pData)
 {
 	unsigned long flags;
 	spin_lock_irqsave(&pi2s_config->lock, flags);
+	MSG("******* %s *******\n", __func__);
 	//if (pi2s_config->bTxDMAEnable!=0)
 	{	
 		if (pi2s_config->tx_unmask_ch!=0)
@@ -2584,6 +2626,7 @@ void i2s_rx_task(unsigned long pData)
 {
 	unsigned long flags;
 	spin_lock_irqsave(&pi2s_config->lock, flags);
+	MSG("******* %s *******\n", __func__);
 	//if (pi2s_config->bRxDMAEnable!=0)
 	{	
 		if (pi2s_config->rx_unmask_ch!=0)
@@ -2640,12 +2683,16 @@ void i2s_dma_mask_handler(u32 dma_ch)
 
 void i2s_dma_tx_init(i2s_config_type* ptri2s_config)
 {
+	MSG("******* %s *******\n", __func__);
+
 	memset(pi2s_config->pPage0TxBuf8ptr, 0, I2S_PAGE_SIZE);
 	memset(pi2s_config->pPage1TxBuf8ptr, 0, I2S_PAGE_SIZE);
 #if defined(ARM_ARCH)
 	GdmaI2sTx(i2s_txdma_addr0, I2S_TX_FIFO_WREG_PHY, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 	GdmaI2sTx(i2s_txdma_addr1, I2S_TX_FIFO_WREG_PHY, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #else
+	//finish dma exec i2s_dma_tx_handler func
+	//start dma exec i2s_dma_tx_unmask_handler func
 	GdmaI2sTx((u32)ptri2s_config->pPage0TxBuf8ptr, I2S_FIFO_WREG, 0, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 	GdmaI2sTx((u32)ptri2s_config->pPage1TxBuf8ptr, I2S_FIFO_WREG, 1, I2S_PAGE_SIZE, i2s_dma_tx_handler, i2s_dma_tx_unmask_handler);
 #endif
@@ -2655,6 +2702,8 @@ void i2s_dma_tx_init(i2s_config_type* ptri2s_config)
 
 void i2s_dma_rx_init(i2s_config_type* ptri2s_config)
 {
+	MSG("******* %s *******\n", __func__);
+
 	memset(pi2s_config->pPage0RxBuf8ptr, 0, I2S_PAGE_SIZE);
 	memset(pi2s_config->pPage1RxBuf8ptr, 0, I2S_PAGE_SIZE);
 
@@ -2674,19 +2723,18 @@ void i2s_dma_tx_end_handle(i2s_config_type* ptri2s_config)
 	if (ptri2s_config->tx_w_idx < ptri2s_config->tx_r_idx)
         {
         	ptri2s_config->end_cnt = (ptri2s_config->tx_w_idx + MAX_I2S_PAGE)-ptri2s_config->tx_r_idx;
-                _printk("case1: w=%d, r=%d, end=%d\n", ptri2s_config->tx_w_idx, ptri2s_config->tx_r_idx, ptri2s_config->end_cnt);
+                MSG("case1: w=%d, r=%d, end=%d\n", ptri2s_config->tx_w_idx, ptri2s_config->tx_r_idx, ptri2s_config->end_cnt);
         }
         else if (ptri2s_config->tx_w_idx > ptri2s_config->tx_r_idx)
         {
                 ptri2s_config->end_cnt = ptri2s_config->tx_w_idx-ptri2s_config->tx_r_idx;
-                _printk("case2: w=%d, r=%d, end=%d\n", ptri2s_config->tx_w_idx, ptri2s_config->tx_r_idx, ptri2s_config->end_cnt);
+                MSG("case2: w=%d, r=%d, end=%d\n", ptri2s_config->tx_w_idx, ptri2s_config->tx_r_idx, ptri2s_config->end_cnt);
         }
 	else
 	{
-		_printk("case3: w=%d, r=%d, end=%d\n", ptri2s_config->tx_w_idx, ptri2s_config->tx_r_idx, ptri2s_config->end_cnt);
+		MSG("case3: w=%d, r=%d, end=%d\n", ptri2s_config->tx_w_idx, ptri2s_config->tx_r_idx, ptri2s_config->end_cnt);
 		
 	}
-
 	if (ptri2s_config->end_cnt > 0)
 	{
 		interruptible_sleep_on(&(ptri2s_config->i2s_tx_qh));
@@ -3040,12 +3088,12 @@ int i2s_ioctl (struct inode *inode, struct file *filp, unsigned int cmd, unsigne
 #if defined(CONFIG_I2S_WM8960)||defined(CONFIG_I2S_WM8750)||defined(CONFIG_I2S_WM8751)
 		audiohw_set_lineout_vol(1, ptri2s_config->txvol, ptri2s_config->txvol);
 #endif
-		GdmaUnMaskChannel(GDMA_I2S_TX0);
+		//GdmaUnMaskChannel(GDMA_I2S_TX0);
 
 		i2s_tx_enable(ptri2s_config);
 	
 		/* Kick off dma channel */	
-		//GdmaUnMaskChannel(GDMA_I2S_TX0);
+		GdmaUnMaskChannel(GDMA_I2S_TX0);
 
 		MSG("I2S_TXENABLE done\n");
 		spin_unlock_irqrestore(&ptri2s_config->lock, flags);
@@ -3300,16 +3348,15 @@ char* i2s_memPool_Alloc(i2s_config_type* ptri2s_config,int dir)
         if(!ptri2s_config)
                 return NULL;
         if(dir == STREAM_PLAYBACK){
-#if defined(CONFIG_I2S_MMAP)
-                i2s_mmap_alloc(I2S_TOTAL_PAGE_SIZE);
-#endif
-                i2s_txbuf_alloc(ptri2s_config);
+			if(ptri2s_config->is_tx_mmap)
+				i2s_mmap_alloc(I2S_TOTAL_PAGE_SIZE,dir);
+			i2s_txbuf_alloc(ptri2s_config);
+					
 		return ptri2s_config->pMMAPTxBufPtr[0];
         }else{
-#if defined(CONFIG_I2S_MMAP)
-                i2s_mmap_alloc(I2S_TOTAL_PAGE_SIZE);
-#endif
-		i2s_rxbuf_alloc(ptri2s_config);	
+        	if(ptri2s_config->is_rx_mmap)
+				i2s_mmap_alloc(I2S_TOTAL_PAGE_SIZE,dir);					
+			i2s_rxbuf_alloc(ptri2s_config);	
 		return ptri2s_config->pMMAPRxBufPtr[0];
 	}
         return NULL;
@@ -3319,16 +3366,17 @@ void i2s_memPool_free(i2s_config_type* ptri2s_config,int dir)
 {
         if(!ptri2s_config)
                 return;
+		MSG("is_tx_mmap:%d\n",ptri2s_config->is_tx_mmap);
+		MSG("is_rx_mmap:%d\n",ptri2s_config->is_rx_mmap);
         if(dir == STREAM_PLAYBACK){
-#if defined(CONFIG_I2S_MMAP)
-		i2s_mem_unmap(ptri2s_config);
-#endif
-		i2s_txbuf_free(ptri2s_config);
+			if(ptri2s_config->is_tx_mmap)
+				i2s_mem_unmap(ptri2s_config,dir);
+			i2s_txbuf_free(ptri2s_config);
+			
         }else{
-#if defined(CONFIG_I2S_MMAP)
-		i2s_mem_unmap(ptri2s_config);
-#endif
-		i2s_rxbuf_free(ptri2s_config);
+        	if(ptri2s_config->is_rx_mmap)
+				i2s_mem_unmap(ptri2s_config,dir);
+			i2s_rxbuf_free(ptri2s_config);
         }
 
         return;
@@ -3362,6 +3410,8 @@ int i2s_page_release(i2s_config_type* ptri2s_config,int dir)
 
 int i2s_startup(void)
 {
+	MSG("%s*******************\n",__func__);
+
 	memset(pi2s_config, 0, sizeof(i2s_config_type));
 	
 #ifdef I2S_STATISTIC
@@ -3370,9 +3420,8 @@ int i2s_startup(void)
 
 	i2s_param_init(pi2s_config);
 	pi2s_config->bALSAEnable = 1;
-#if defined(CONFIG_I2S_MMAP)
-	pi2s_config->bALSAMMAPEnable = 1;
-#endif
+	
+
 
 #if defined (CONFIG_RALINK_MT7628) || defined(CONFIG_ARCH_MT7623)
 	pi2s_config->little_edn = 1;
@@ -3393,6 +3442,7 @@ int gdma_En_Switch(i2s_config_type* ptri2s_config,int dir,int enabled){
                 //MSG("%s:%d\n",__func__,ptri2s_config->bTxDMAEnable);
         }else{
                 ptri2s_config->bRxDMAEnable = enabled;
+				MSG("%s:%d\n",__func__,ptri2s_config->bRxDMAEnable);
         }
         return 0;
 }
@@ -3422,11 +3472,11 @@ void gdma_unmask_handler(u32 dma_ch)
 	return;
 }
 
-u32 i2s_mmap_phys_addr(i2s_config_type* ptri2s_config)
+u32 i2s_mmap_phys_addr(i2s_config_type* ptri2s_config,int dir)
 {
-	if((ptri2s_config->pMMAPBufPtr[0]!=NULL) && (ptri2s_config->mmap_index == MAX_I2S_PAGE))
+	if((ptri2s_config->pMMAPBufPtr[0]!=NULL) && (dir == STREAM_PLAYBACK))
 		return (dma_addr_t)i2s_mmap_addr[0];
-	else if((ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]!=NULL) && (ptri2s_config->mmap_index == MAX_I2S_PAGE*2))
+	else if((ptri2s_config->pMMAPBufPtr[MAX_I2S_PAGE]!=NULL) && (dir == STREAM_CAPTURE))
 		return (dma_addr_t)i2s_mmap_addr[MAX_I2S_PAGE];
 	else
 		return -1;
