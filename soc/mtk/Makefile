@@ -38,4 +38,3 @@ snd-soc-mt76xx-machine-objs := mt76xx_machine.o
 obj-$(CONFIG_SND_MT76XX_SOC) += i2c_wm8960.o ralink_gdma.o snd-soc-mt76xx-machine.o
 
 
-
