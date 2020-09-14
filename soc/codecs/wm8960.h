@@ -173,5 +173,5 @@
 #define RINV_RINMUTE                    (1 << 7)
 #define RINV_RIZC                       (1 << 6)
 #define RINV_RINVOL(x)                  ((x) & 0x3f)
-#define MBSEL                       	(1 << 0)
+
 #endif
